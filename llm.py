@@ -8,8 +8,8 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# using llama3-8b — fast and handles this kind of task well
-MODEL = "llama3-8b-8192"
+# llama-3.1-8b-instant — fast, cheap, and great for text classification tasks
+MODEL = "llama-3.1-8b-instant"
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 

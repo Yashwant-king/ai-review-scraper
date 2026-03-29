@@ -5,7 +5,7 @@ import logging
 import pandas as pd
 from dotenv import load_dotenv
 
-from scraper import scrape_reviews
+from scraper import scrape_reviews, get_demo_reviews
 from preprocess import preprocess_all
 from llm import analyze_chunked_review
 
@@ -17,50 +17,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# product I used for testing — feel free to change via CLI arg
+# Amazon Echo Dot 5th Gen — product used for testing
+# has tons of reviews and a good mix of sentiments
 DEFAULT_URL = "https://www.amazon.com/dp/B09B8YWXDF"
 
 
 def main():
-    if len(sys.argv) > 1:
-        url = sys.argv[1]
+    demo_mode = "--demo" in sys.argv
+    url_args = [a for a in sys.argv[1:] if not a.startswith("--")]
+
+    if url_args:
+        url = url_args[0]
     else:
         url = DEFAULT_URL
-        print(f"No URL provided, using default: {url}")
-        print("(You can pass a URL as argument: python main.py <url>)\n")
+        if not demo_mode:
+            print(f"No URL provided, using default: {url}")
+            print("Tip: run with --demo flag to skip scraping and test with sample data\n")
 
-    print(f"Starting review scraper for:\n{url}\n")
-    print("-" * 60)
+    print(f"\nAI Review Scraper")
+    print("=" * 60)
+    print(f"Product: {url}")
+    print("=" * 60)
 
-    # --- Step 1: Scrape ---
-    print("\n[1/4] Scraping reviews...")
-    reviews = scrape_reviews(url, max_pages=3)
+    # --- Step 1: Scrape (or use demo data) ---
+    if demo_mode:
+        print("\n[DEMO MODE] Using sample reviews instead of live scraping")
+        reviews = get_demo_reviews()
+    else:
+        print("\n[1/4] Scraping reviews from Amazon...")
+        reviews = scrape_reviews(url, max_pages=3)
 
-    if not reviews:
-        print("\nNo reviews scraped. A few things to try:")
-        print("  - Amazon sometimes blocks bots, try waiting 5 mins and retry")
-        print("  - Make sure the URL is a product page, not a search page")
-        print("  - Try a different product URL")
-        sys.exit(1)
+        if not reviews:
+            print("\nCouldn't scrape live reviews (Amazon bot protection is active)")
+            print("Falling back to demo reviews to show the full pipeline...\n")
+            reviews = get_demo_reviews()
 
-    print(f"Got {len(reviews)} reviews\n")
+    print(f"Got {len(reviews)} reviews to analyze\n")
 
     # --- Step 2: Preprocess ---
-    print("[2/4] Cleaning review text...")
+    print("[2/4] Cleaning and preprocessing text...")
     processed = preprocess_all(reviews)
-    print(f"{len(processed)} reviews ready for LLM analysis\n")
+    print(f"{len(processed)} reviews ready\n")
 
     # --- Step 3: LLM Analysis ---
-    print("[3/4] Running sentiment analysis via Groq...\n")
+    print("[3/4] Running Groq LLM analysis (llama3-8b-8192)...\n")
     results = []
 
     for i, review in enumerate(processed, 1):
-        print(f"  [{i}/{len(processed)}] Analyzing review by {review.get('author', 'Unknown')}...")
+        author = review.get("author", "Unknown")
+        print(f"  Analyzing [{i}/{len(processed)}]: '{review.get('title', 'No title')}' by {author}")
 
         analysis = analyze_chunked_review(review["chunks"])
 
         results.append({
-            "author": review.get("author", "Unknown"),
+            "author": author,
             "rating": review.get("rating", "N/A"),
             "date": review.get("date", "N/A"),
             "title": review.get("title", ""),
@@ -69,27 +79,33 @@ def main():
             "sentiment": analysis.get("sentiment", "Unknown")
         })
 
-        # small delay between calls to be safe with rate limits
-        time.sleep(1)
+        print(f"    → Sentiment: {analysis.get('sentiment')} | {analysis.get('summary', '')[:80]}...")
+        time.sleep(0.8)  # small delay between Groq API calls
 
-    print(f"\nDone! Analyzed {len(results)} reviews")
+    print(f"\n✓ Analysis complete for all {len(results)} reviews")
 
     # --- Step 4: Save Output ---
-    print("\n[4/4] Saving results...")
+    print("\n[4/4] Saving results to CSV...")
     os.makedirs("output", exist_ok=True)
     output_path = "output/reviews.csv"
 
     df = pd.DataFrame(results)
     df.to_csv(output_path, index=False, encoding='utf-8-sig')
-    print(f"Saved to: {output_path}")
+    print(f"Saved: {output_path}")
 
-    # quick summary
-    print("\n--- Sentiment Breakdown ---")
-    for sentiment, count in df["sentiment"].value_counts().items():
+    # print a little summary table
+    print("\n--- Sentiment Summary ---")
+    counts = df["sentiment"].value_counts()
+    total = len(df)
+    for sentiment, count in counts.items():
+        pct = round(count / total * 100)
         bar = "█" * count
-        print(f"  {sentiment:<10} {bar} ({count})")
+        print(f"  {sentiment:<10} {bar} {count} ({pct}%)")
 
-    print("\nAll done!")
+    avg_rating = df[df["rating"] != "N/A"]["rating"].astype(float).mean()
+    print(f"\n  Avg Rating : {avg_rating:.1f} / 5.0")
+    print(f"  Total      : {total} reviews analyzed")
+    print("\nDone!")
 
 
 if __name__ == "__main__":
