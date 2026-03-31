@@ -104,19 +104,23 @@ with st.sidebar:
     }
     st.caption(f"Model: `{model_info[provider]}`")
 
-    # API key input
+    # API key input — loads from .env silently, never shown in UI
     env_keys = {
         "Groq": "GROQ_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
         "Gemini": "GEMINI_API_KEY"
     }
-    default_key = os.getenv(env_keys[provider], "")
-    api_key = st.text_input(
+    env_key = os.getenv(env_keys[provider], "")
+    user_key = st.text_input(
         f"🔑 {provider} API Key",
         type="password",
-        value=default_key,
+        value="",
         placeholder=f"Enter your {provider} API key..."
     )
+    # use user-provided key first, fallback to .env key
+    api_key = user_key if user_key else env_key
+    if env_key and not user_key:
+        st.caption("✅ Key loaded from `.env` file")
 
     link_map = {
         "Groq": "https://console.groq.com",
