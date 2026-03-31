@@ -3,7 +3,7 @@ import os
 import time
 import pandas as pd
 from dotenv import load_dotenv
-from scraper import scrape_reviews, get_demo_reviews
+from scraper import scrape_reviews, detect_platform, SUPPORTED_PLATFORMS, PLATFORM_ICONS
 from preprocess import preprocess_all
 from llm import analyze_chunked_review
 
@@ -91,24 +91,41 @@ with st.sidebar:
     st.markdown("### 🤖 LLM Provider")
     provider = st.selectbox(
         "Choose AI Provider",
-        ["Groq", "OpenAI", "Gemini"],
+        ["OpenRouter", "Groq", "OpenAI", "Gemini"],
         index=0,
-        help="Select which LLM to use for sentiment analysis"
+        help="OpenRouter gives access to many models including GPT-4o"
     )
 
     # model info
     model_info = {
-        "Groq": "llama-3.1-8b-instant (fastest, free)",
-        "OpenAI": "gpt-3.5-turbo",
-        "Gemini": "gemini-1.5-flash"
+        "OpenRouter": "openai/gpt-4o-mini (via openrouter.ai)",
+        "Groq":       "llama-3.3-70b-versatile (fastest, free)",
+        "OpenAI":     "gpt-4o-mini",
+        "Gemini":     "gemini-1.5-flash"
     }
-    st.caption(f"Model: `{model_info[provider]}`")
+    default_models = {
+        "OpenRouter": "openai/gpt-4o-mini",
+        "Groq":       "llama-3.3-70b-versatile",
+        "OpenAI":     "gpt-4o-mini",
+        "Gemini":     "gemini-1.5-flash"
+    }
+    st.caption(f"Default model: `{model_info[provider]}`")
+
+    # Custom model override
+    custom_model = st.text_input(
+        "🧠 Model name (optional override)",
+        value="",
+        placeholder=default_models[provider],
+        help="Leave blank to use the default model. For OpenRouter use format: provider/model-name"
+    )
+    selected_model = custom_model.strip() if custom_model.strip() else default_models[provider]
 
     # API key input — loads from .env silently, never shown in UI
     env_keys = {
-        "Groq": "GROQ_API_KEY",
-        "OpenAI": "OPENAI_API_KEY",
-        "Gemini": "GEMINI_API_KEY"
+        "OpenRouter": "OPENROUTER_API_KEY",
+        "Groq":       "GROQ_API_KEY",
+        "OpenAI":     "OPENAI_API_KEY",
+        "Gemini":     "GEMINI_API_KEY",
     }
     env_key = os.getenv(env_keys[provider], "")
     user_key = st.text_input(
@@ -123,7 +140,8 @@ with st.sidebar:
         st.caption("✅ Key loaded from `.env` file")
 
     link_map = {
-        "Groq": "https://console.groq.com",
+        "OpenRouter": "https://openrouter.ai/keys",
+        "Groq":   "https://console.groq.com",
         "OpenAI": "https://platform.openai.com/api-keys",
         "Gemini": "https://aistudio.google.com/app/apikey"
     }
@@ -134,11 +152,10 @@ with st.sidebar:
     # scraper settings
     st.markdown("### ⚙️ Scraper Settings")
     max_pages = st.slider("Max review pages", 1, 5, 2)
-    use_demo = st.toggle("Use demo data (skip live scraping)", value=False,
-                         help="Toggle off to try live scraping from Amazon")
 
     st.divider()
     st.markdown("#### 📌 Quick Links")
+    st.markdown("- [OpenRouter (Free credits)](https://openrouter.ai/keys)")
     st.markdown("- [Get Groq Key (Free)](https://console.groq.com)")
     st.markdown("- [Get OpenAI Key](https://platform.openai.com/api-keys)")
     st.markdown("- [Get Gemini Key (Free)](https://aistudio.google.com/app/apikey)")
@@ -148,7 +165,7 @@ with st.sidebar:
 # MAIN UI
 # =====================
 st.markdown('<div class="main-title">🔍 AI Review Scraper</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Scrape Amazon product reviews → Analyze with AI → Export results</div>',
+st.markdown('<div class="subtitle">Scrape product reviews from major platforms → Analyze with AI → Export results</div>',
             unsafe_allow_html=True)
 
 # URL input
@@ -156,14 +173,22 @@ col1, col2 = st.columns([4, 1])
 with col1:
     url = st.text_input(
         "Product URL",
-        value="https://www.amazon.com/dp/B09B8YWXDF",
-        placeholder="https://www.amazon.com/dp/...",
+        value="",
+        placeholder="Paste a product or review page URL…",
         label_visibility="collapsed"
     )
 with col2:
     run_btn = st.button("🚀 Analyze", use_container_width=True)
 
-st.caption("Example: Amazon Echo Dot 5th Gen — `https://www.amazon.com/dp/B09B8YWXDF`")
+st.caption(
+    "Supported: "
+    "🛒 Amazon · "
+    "🛍️ Flipkart · "
+    "⭐ Trustpilot · "
+    "🏷️ eBay · "
+    "🖥️ Best Buy · "
+    "💼 G2"
+)
 st.divider()
 
 
@@ -179,28 +204,57 @@ if run_btn:
         st.error("Please enter a product URL")
         st.stop()
 
+    # detect platform before starting
+    platform = detect_platform(url.strip())
+    platform_icon = PLATFORM_ICONS.get(platform, "❓")
+
+    if platform == "Unknown":
+        st.error(
+            "**Unsupported website.**\n\n"
+            f"Supported platforms: {', '.join(SUPPORTED_PLATFORMS)}\n\n"
+            "Please paste a URL from one of the supported sites."
+        )
+        st.stop()
+
+    st.info(f"{platform_icon} Detected platform: **{platform}**")
+
     # step 1: scrape
-    with st.status("📦 Scraping reviews...", expanded=True) as status:
-        if use_demo:
-            st.write("Using demo reviews (demo mode is ON)")
-            reviews = get_demo_reviews()
-            st.write(f"✅ Loaded {len(reviews)} sample reviews")
-        else:
-            st.write(f"Scraping {url} (up to {max_pages} pages)...")
-            reviews = scrape_reviews(url, max_pages=max_pages)
-            if not reviews:
-                st.write("⚠️ Amazon blocked scraping — falling back to demo reviews")
-                reviews = get_demo_reviews()
-            st.write(f"✅ Got {len(reviews)} reviews")
+    with st.status(f"📦 Scraping {platform} reviews...", expanded=True) as status:
+        st.write(f"Scraping `{url}` (up to {max_pages} pages)…")
+        reviews, debug = scrape_reviews(url, max_pages=max_pages, status_cb=st.write)
+
+        if not reviews:
+            status.update(label="❌ Scraping returned 0 reviews", state="error")
+            html_info = ""
+            if debug.get("html_sizes"):
+                avg = sum(debug["html_sizes"]) // len(debug["html_sizes"])
+                html_info = f" (received ~{avg:,} bytes of HTML per page)"
+
+            st.error(
+                f"**{platform} returned 0 reviews{html_info}.**\n\n"
+                "**Why this happens:**\n"
+                f"- {platform} requires JavaScript to load reviews — plain HTTP requests can't see them\n"
+                "- Your IP may be rate-limited or flagged as a bot\n"
+                "- The page structure may have changed since this parser was written\n\n"
+                "**What you can try:**\n"
+                "- ⭐ **Trustpilot** works best — paste a URL like `https://www.trustpilot.com/review/amazon.com`\n"
+                "- Wait a few minutes and retry\n"
+                "- Use a VPN or different network\n"
+                "- Check the debug output above for the HTML preview to understand what was received"
+            )
+            st.stop()
+
+        st.write(f"✅ Got {len(reviews)} reviews from {platform}")
 
         # step 2: preprocess
         st.write("🧹 Cleaning and chunking text...")
         processed = preprocess_all(reviews)
         st.write(f"✅ {len(processed)} reviews ready for analysis")
-        status.update(label="Scraping complete!", state="complete")
+        status.update(label=f"✅ Scraped {len(reviews)} {platform} reviews!", state="complete")
 
     # step 3: LLM analysis
-    st.markdown(f"### 🤖 Analyzing with {provider}...")
+    st.markdown(f"### 🤖 Analyzing {platform} reviews with {provider}...")
+
     progress = st.progress(0)
     results = []
 
@@ -212,7 +266,8 @@ if run_btn:
         analysis = analyze_chunked_review(
             review["chunks"],
             provider=provider,
-            api_key=api_key
+            api_key=api_key,
+            model=selected_model
         )
 
         results.append({
@@ -248,7 +303,7 @@ if run_btn:
         time.sleep(0.5)
 
     progress.progress(1.0)
-    st.success(f"✅ Analysis complete — {len(results)} reviews processed using {provider}")
+    st.success(f"✅ Analysis complete — {len(results)} reviews processed using {provider} / `{selected_model}`")
 
     # step 4: stats + output
     df = pd.DataFrame(results)
@@ -312,17 +367,32 @@ else:
     # landing state
     st.markdown("""
     ### How it works
-    1. **Enter a product URL** above (Amazon product page)
-    2. **Choose your LLM** in the sidebar (Groq is free)
+    1. **Paste a product or review page URL** from any supported platform
+    2. **Choose your LLM** in the sidebar (OpenRouter is recommended — free credits available)
     3. **Enter your API key** in the sidebar
     4. Click **🚀 Analyze** — the app scrapes reviews and runs AI analysis on each one
     5. **Download results** as CSV
     """)
 
-    c1, c2, c3 = st.columns(3)
+    st.markdown("### 🌐 Supported Platforms")
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        st.info("🛒 **Amazon**\namazon.com product pages")
+        st.info("🏷️ **eBay**\nebay.com product pages")
+    with p2:
+        st.info("🛍️ **Flipkart**\nflipkart.com product pages")
+        st.info("🖥️ **Best Buy**\nbestbuy.com product pages")
+    with p3:
+        st.info("⭐ **Trustpilot**\ntrustpilot.com/review/...")
+        st.info("💼 **G2**\ng2.com/products/.../reviews")
+
+    st.markdown("### 🤖 LLM Providers")
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.info("🤖 **Groq** (Free)\nFastest option, LLaMA 3.1")
+        st.info("🌐 **OpenRouter** (★ Recommended)\nAccess GPT-4o, Claude, Llama via one key")
     with c2:
-        st.info("🟢 **OpenAI**\nGPT-3.5-turbo, paid")
+        st.info("🤖 **Groq** (Free)\nFastest option, Llama 3.3-70b")
     with c3:
+        st.info("🟢 **OpenAI**\nGPT-4o-mini, paid")
+    with c4:
         st.info("💎 **Gemini** (Free tier)\nGemini 1.5 Flash")

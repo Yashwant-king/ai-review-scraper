@@ -3,211 +3,756 @@ from bs4 import BeautifulSoup
 import time
 import random
 import logging
+import re
+import json
 from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# trying to look like a real browser as much as possible
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Cache-Control": "max-age=0",
-}
+# Supported platforms
+SUPPORTED_PLATFORMS = ["Amazon", "Flipkart", "Trustpilot", "eBay", "Best Buy", "G2"]
 
-# sample reviews for demo/fallback mode
-# these are realistic-looking reviews for the Echo Dot product
-DEMO_REVIEWS = [
-    {
-        "author": "Sarah M.",
-        "rating": "5.0",
-        "date": "Reviewed in the United States on January 15, 2024",
-        "title": "Best smart speaker for the price",
-        "review_text": "I've had this for about 3 months now and honestly it's exceeded my expectations. The sound quality is surprisingly good for such a small device. I use it mainly for music, setting timers, and controlling my smart home lights. Setup was dead simple — took maybe 5 minutes. The new design is way better than the older egg-shaped ones. Only minor complaint is Alexa sometimes mishears me but that's maybe 1 out of 20 commands."
-    },
-    {
-        "author": "James T.",
-        "rating": "2.0",
-        "date": "Reviewed in the United States on February 3, 2024",
-        "title": "Disappointed with the microphone quality",
-        "review_text": "Bought this to replace my older Echo Dot and honestly I regret it. The microphone doesn't pick up my voice from across the room like the old one did. I have to speak loudly or be close to it. Also had some connectivity issues where it would randomly disconnect from WiFi. Amazon support was helpful but the problem kept coming back. The sound quality is fine I guess but the whole point of these things is voice control and that part is worse than my 4 year old device."
-    },
-    {
-        "author": "Priya K.",
-        "rating": "4.0",
-        "date": "Reviewed in the United States on March 10, 2024",
-        "title": "Good product, minor software issues",
-        "review_text": "Pretty happy with this purchase overall. Sound is clear and crisp, Alexa responds quickly most of the time. I dock one star because of some annoying software behavior — it sometimes randomly starts playing music I didn't ask for, and the daily briefing feature is hard to turn off completely. Once you figure out the settings it's fine. Build quality feels solid and the matte finish looks great on my desk."
-    },
-    {
-        "author": "Mike R.",
-        "rating": "5.0",
-        "date": "Reviewed in the United States on December 28, 2023",
-        "title": "Great gift, family loves it",
-        "review_text": "Got this as a Christmas gift for my parents who aren't very tech savvy. They figured it out completely on their own which says a lot. My mom uses it to listen to oldies music all day and my dad uses it for weather updates and sports scores. The speaker is loud enough for an average sized room. Definitely recommend for older folks who just want something simple that works."
-    },
-    {
-        "author": "Alex W.",
-        "rating": "1.0",
-        "date": "Reviewed in the United States on January 30, 2024",
-        "title": "Stopped working after 6 weeks",
-        "review_text": "Worked fine for about 6 weeks then completely died. Won't turn on at all, no lights, nothing. I tried different power adapters and outlets. Amazon replaced it but now I'm nervous the replacement will die too. First time I've had a hardware failure this quick on any Amazon device. Hoping this was just a bad unit."
-    },
-    {
-        "author": "Chen L.",
-        "rating": "4.0",
-        "date": "Reviewed in the United States on February 20, 2024",
-        "title": "Solid upgrade from Gen 4",
-        "review_text": "Upgraded from the 4th gen and there's a noticeable improvement in bass. Not audiophile level by any means but for a $50 speaker it punches well above its weight. The temperature sensor is a nice addition — I check the room temp all the time now. Alexa feels snappier too, responses are quicker. Still has the same limitation of relying on Amazon ecosystem but if you're already in that world this is a no brainer."
-    },
-    {
-        "author": "Diana P.",
-        "rating": "3.0",
-        "date": "Reviewed in the United States on March 5, 2024",
-        "title": "Mixed feelings",
-        "review_text": "It does what it's supposed to do but I feel like the smart home integration has gotten worse with recent updates. Commands that used to work reliably now sometimes fail or give weird responses. The hardware itself is fine, actually better than before. But Alexa as a platform feels like it's going backwards lately. I've been thinking about switching to Google Home for a while and this experience is making me more likely to do it."
-    },
-    {
-        "author": "Tom B.",
-        "rating": "5.0",
-        "date": "Reviewed in the United States on January 8, 2024",
-        "title": "Perfect for the bedroom",
-        "review_text": "Using this as a bedside alarm clock replacement and it's perfect for that. I ask it to wake me up, get the weather, and play some lo-fi music while I sleep. The volume goes low enough that it doesn't disturb my partner. The night light feature (with the color ring) is a nice touch. Much better than constantly reaching for my phone in the morning."
-    }
+# Rotate User-Agents to reduce bot detection
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 ]
 
+PLATFORM_REFERERS = {
+    "Amazon":    "https://www.amazon.com/",
+    "Flipkart":  "https://www.flipkart.com/",
+    "Trustpilot":"https://www.trustpilot.com/",
+    "Best Buy":  "https://www.bestbuy.com/",
+    "eBay":      "https://www.ebay.com/",
+    "G2":        "https://www.g2.com/",
+}
 
-def get_page(url, retries=3):
+PLATFORM_ICONS = {
+    "Amazon":    "🛒",
+    "Flipkart":  "🛍️",
+    "Trustpilot":"⭐",
+    "eBay":      "🏷️",
+    "Best Buy":  "🖥️",
+    "G2":        "💼",
+    "Unknown":   "❓",
+}
+
+
+# ─────────────────────────────────────────────
+#  HELPERS
+# ─────────────────────────────────────────────
+
+def _get_headers(platform=""):
+    """Return headers with a randomly chosen User-Agent and platform-aware Referer."""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+        "Referer": PLATFORM_REFERERS.get(platform, "https://www.google.com/"),
+    }
+
+
+def _is_blocked(html, platform=""):
+    """Detect a CAPTCHA or bot-challenge page — only use highly specific phrases."""
+    if not html or len(html) < 300:
+        return True
+    # These strings only appear on challenge/block pages, not normal content
+    indicators = [
+        "Enter the characters you see below",
+        "Type the characters you see in this image",
+        "Sorry, we just need to make sure you're not a robot",
+        "To discuss automated access to Amazon data",
+        "<title>Robot Check</title>",
+        "api-services-support@amazon.com",
+        "Pardon Our Interruption",           # Cloudflare / Akamai
+        "cf-browser-verification",           # Cloudflare
+        "Just a moment...",                  # Cloudflare challenge page title
+        "Enable JavaScript and cookies to continue",   # Cloudflare JS challenge
+        "Please enable cookies.",            # Cloudflare cookie challenge
+        "/_Incapsula_Resource",              # Imperva / Incapsula
+        "px.gif",                            # PerimeterX bot protection
+    ]
+    # Case-sensitive — these exact strings only appear in challenge pages
+    return any(ind in html for ind in indicators)
+
+
+def detect_platform(url):
+    """Auto-detect the e-commerce / review platform from the URL."""
+    url_lower = url.lower()
+    if "amazon."     in url_lower: return "Amazon"
+    if "flipkart.com" in url_lower: return "Flipkart"
+    if "trustpilot.com" in url_lower: return "Trustpilot"
+    if "bestbuy.com"  in url_lower: return "Best Buy"
+    if "ebay.com"     in url_lower: return "eBay"
+    if "g2.com"       in url_lower: return "G2"
+    return "Unknown"
+
+
+def _build_reviews_url(url, platform):
+    """Convert a product page URL to the dedicated reviews URL where needed."""
+    if platform == "Amazon":
+        if "/dp/" in url:
+            asin = url.split("/dp/")[1].split("/")[0].split("?")[0]
+            return (f"https://www.amazon.com/product-reviews/{asin}"
+                    f"?reviewerType=all_reviews&sortBy=recent&pageNumber=1")
+        return url
+
+    if platform == "G2":
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/reviews"):
+            path += "/reviews"
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+    # Trustpilot, Flipkart, eBay, Best Buy — use URL as-is
+    return url
+
+
+def _make_session(platform):
+    """
+    Build a requests.Session and prefetch the homepage to get cookies.
+    This makes subsequent requests look more like a real browser session.
+    """
+    sess = requests.Session()
+    home = PLATFORM_REFERERS.get(platform, "https://www.google.com/")
+    try:
+        sess.get(home, headers=_get_headers(platform), timeout=8, allow_redirects=True)
+        time.sleep(random.uniform(0.8, 2.0))
+        logger.info(f"[{platform}] Session established (cookies: {len(sess.cookies)})")
+    except Exception as e:
+        logger.debug(f"[{platform}] Preflight failed (continuing anyway): {e}")
+    return sess
+
+
+def get_page(url, platform="", session=None, retries=3):
+    """Fetch a URL with retries, a shared session, and bot-check detection."""
+    requester = session or requests  # use session if provided, else plain requests
     for attempt in range(retries):
         try:
-            # random delay to look less like a bot
-            time.sleep(random.uniform(2.0, 4.5))
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            time.sleep(random.uniform(1.5, 4.0))
+            resp = requester.get(url, headers=_get_headers(platform), timeout=15)
             resp.raise_for_status()
-            return resp.text
+            html = resp.text
+            logger.info(f"[{platform}] Got {len(html):,} bytes (status {resp.status_code})")
+            if _is_blocked(html, platform):
+                logger.warning(f"[{platform}] Bot-challenge page detected on attempt {attempt + 1}")
+                time.sleep(7 + attempt * 5)
+                continue
+            return html
+
         except requests.exceptions.HTTPError as e:
             code = e.response.status_code
-            if code in (503, 429):
-                logger.warning(f"Got {code} (bot check/rate limit), waiting before retry...")
-                time.sleep(5 + attempt * 3)
+            if code in (429, 503):
+                logger.warning(f"[{platform}] HTTP {code} — rate limited, waiting…")
+                time.sleep(10 + attempt * 6)
             elif code == 404:
-                logger.error("Page not found (404). Check the URL.")
+                logger.error(f"[{platform}] 404 — page not found.")
                 raise
             else:
-                logger.warning(f"HTTP {code} on attempt {attempt+1}")
+                logger.warning(f"[{platform}] HTTP {code} on attempt {attempt + 1}")
+
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Request failed on attempt {attempt+1}: {e}")
+            logger.warning(f"[{platform}] Request error on attempt {attempt + 1}: {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
                 raise
+
     return None
 
+# ─────────────────────────────────────────────
+#  JSON-LD STRUCTURED DATA PARSER (universal)
+# ─────────────────────────────────────────────
 
-def parse_amazon_reviews(html):
+def _parse_json_ld_reviews(html):
+    """
+    Extract reviews from JSON-LD <script type="application/ld+json"> blocks.
+    Works for any site that embeds schema.org Review markup (Trustpilot, G2, etc.).
+    """
     soup = BeautifulSoup(html, "html.parser")
     reviews = []
+    for script in soup.find_all("script", {"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                reviews.extend(_extract_ld_reviews(item))
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    return reviews
 
+
+def _extract_ld_reviews(data):
+    """Recursively extract review dicts from a JSON-LD object tree."""
+    reviews = []
+    if not isinstance(data, dict):
+        return reviews
+
+    schema_type = data.get("@type", "")
+
+    # Direct schema type: Review
+    if schema_type == "Review":
+        r = _parse_single_ld_review(data)
+        if r:
+            reviews.append(r)
+
+    # Container types that hold a 'review' list
+    elif schema_type in ("Product", "LocalBusiness", "Organization",
+                         "SoftwareApplication", "WebPage"):
+        raw = data.get("review", [])
+        if isinstance(raw, dict):
+            raw = [raw]
+        for r in raw:
+            parsed = _parse_single_ld_review(r)
+            if parsed:
+                reviews.append(parsed)
+
+    # Recurse into @graph
+    for item in data.get("@graph", []):
+        reviews.extend(_extract_ld_reviews(item))
+
+    return reviews
+
+
+def _parse_single_ld_review(r):
+    """Convert a single JSON-LD Review dict into our standard review format."""
+    if not isinstance(r, dict):
+        return None
+    body = r.get("reviewBody") or r.get("description") or ""
+    if not body or len(str(body).strip()) < 10:
+        return None
+
+    author = r.get("author", {})
+    if isinstance(author, dict):
+        author = author.get("name", "Unknown")
+
+    rating_info = r.get("reviewRating", {})
+    rating = "N/A"
+    if isinstance(rating_info, dict):
+        rating = str(rating_info.get("ratingValue", "N/A"))
+
+    date = r.get("datePublished") or r.get("dateCreated") or "N/A"
+
+    return {
+        "author":      str(author).strip() if author else "Unknown",
+        "rating":      rating,
+        "date":        str(date)[:10] if date else "N/A",
+        "title":       str(r.get("name") or r.get("headline") or "").strip(),
+        "review_text": str(body).strip(),
+    }
+
+
+
+# ─────────────────────────────────────────────
+#  PLATFORM PARSERS
+# ─────────────────────────────────────────────
+
+def parse_amazon_reviews(html):
+    # Amazon product-reviews pages embed JSON-LD on some regions — try it first
+    ld_reviews = _parse_json_ld_reviews(html)
+    if ld_reviews:
+        logger.info(f"Amazon: got {len(ld_reviews)} reviews via JSON-LD")
+        return ld_reviews
+
+    soup = BeautifulSoup(html, "html.parser")
+    reviews = []
     review_divs = soup.find_all("div", {"data-hook": "review"})
 
     if not review_divs:
-        logger.warning("No review elements found — Amazon likely blocked the request")
+        logger.warning("Amazon: no review elements found (likely blocked)")
         return reviews
 
     for div in review_divs:
         try:
             author_el = div.find("span", class_="a-profile-name")
             rating_el = div.find("i", {"data-hook": "review-star-rating"})
-            date_el = div.find("span", {"data-hook": "review-date"})
-            title_el = div.find("a", {"data-hook": "review-title"})
-            body_el = div.find("span", {"data-hook": "review-body"})
+            date_el   = div.find("span", {"data-hook": "review-date"})
+            title_el  = div.find("a", {"data-hook": "review-title"})
+            body_el   = div.find("span", {"data-hook": "review-body"})
 
-            author = author_el.text.strip() if author_el else "Unknown"
-            # rating is like "4.0 out of 5 stars", just grab the number
-            rating = rating_el.text.strip().split(" ")[0] if rating_el else "N/A"
-            date = date_el.text.strip() if date_el else "N/A"
-            title = title_el.text.strip() if title_el else ""
             body = body_el.text.strip() if body_el else ""
-
             if not body:
                 continue
 
-            reviews.append({
-                "author": author,
-                "rating": rating,
-                "date": date,
-                "title": title,
-                "review_text": body
-            })
+            # rating string is "4.0 out of 5 stars" — grab just the number
+            rating = rating_el.text.strip().split(" ")[0] if rating_el else "N/A"
 
+            reviews.append({
+                "author":      author_el.text.strip() if author_el else "Unknown",
+                "rating":      rating,
+                "date":        date_el.text.strip() if date_el else "N/A",
+                "title":       title_el.text.strip() if title_el else "",
+                "review_text": body,
+            })
         except Exception as e:
-            logger.debug(f"Skipping review due to parse error: {e}")
-            continue
+            logger.debug(f"Amazon: skipping review — {e}")
 
     return reviews
 
 
-def get_next_page_url(html, base_url):
-    soup = BeautifulSoup(html, "html.parser")
-    next_btn = soup.find("li", class_="a-last")
+def parse_flipkart_reviews(html):
+    # Try JSON-LD first
+    ld_reviews = _parse_json_ld_reviews(html)
+    if ld_reviews:
+        logger.info(f"Flipkart: got {len(ld_reviews)} reviews via JSON-LD")
+        return ld_reviews
 
-    if next_btn and next_btn.find("a"):
-        href = next_btn.find("a").get("href", "")
-        if href.startswith("/"):
-            parsed = urlparse(base_url)
-            return f"{parsed.scheme}://{parsed.netloc}{href}"
-        elif href.startswith("http"):
+    soup = BeautifulSoup(html, "html.parser")
+    reviews = []
+
+    # Flipkart uses obfuscated class names that change over time.
+    # Try multiple known patterns across different Flipkart layouts.
+    review_blocks = (
+        soup.find_all("div", class_=re.compile(r"EPCmJX"))          # layout A
+        or soup.find_all("div", class_=re.compile(r"_27M-vq"))      # layout B
+        or soup.find_all("div", class_=re.compile(r"col _2wzgFH"))  # layout C
+    )
+
+    if not review_blocks:
+        # Fallback: look for the reviews container and grab child divs
+        container = soup.find("div", class_=re.compile(r"_4Ewn4|JAISCM|EIHun5"))
+        if container:
+            review_blocks = container.find_all("div", recursive=False)
+
+    if not review_blocks:
+        logger.warning("Flipkart: no review containers found")
+        return reviews
+
+    for block in review_blocks:
+        try:
+            # Rating: numeric div or span
+            rating_el = (
+                block.find("div", class_=re.compile(r"XQDdHH|_3LWZlK"))
+                or block.find("span", class_=re.compile(r"XQDdHH|_3LWZlK"))
+            )
+            # Review title
+            title_el = block.find("p", class_=re.compile(r"z9E0IG|_2-N8zT"))
+            # Review body
+            body_el = block.find("div", class_=re.compile(r"ZmyHeo|_6K-7Co"))
+            # Author
+            author_el = block.find("p", class_=re.compile(r"_2sc7ZR|_4AzHi"))
+            # Date
+            date_el = block.find("p", class_=re.compile(r"_2NsDsV|_2sc7ZR"))
+
+            body = body_el.get_text(" ", strip=True) if body_el else ""
+            if not body or len(body) < 10:
+                continue
+
+            reviews.append({
+                "author":      author_el.text.strip() if author_el else "Flipkart Customer",
+                "rating":      rating_el.text.strip() if rating_el else "N/A",
+                "date":        date_el.text.strip() if date_el else "N/A",
+                "title":       title_el.text.strip() if title_el else "",
+                "review_text": body,
+            })
+        except Exception as e:
+            logger.debug(f"Flipkart: skipping review — {e}")
+
+    return reviews
+
+
+def parse_trustpilot_reviews(html):
+    # Trustpilot reliably embeds JSON-LD — try it first
+    ld_reviews = _parse_json_ld_reviews(html)
+    if ld_reviews:
+        logger.info(f"Trustpilot: got {len(ld_reviews)} reviews via JSON-LD")
+        return ld_reviews
+
+    soup = BeautifulSoup(html, "html.parser")
+    reviews = []
+
+    # Strategy: find every <article> on the page that has a <p> (body) and <time> (date).
+    # This is stable regardless of class-name obfuscation.
+    articles = soup.find_all("article")
+    candidate_articles = [a for a in articles if a.find("p") and a.find("time")]
+
+    if not candidate_articles:
+        # Fallback: class-name patterns
+        candidate_articles = (
+            soup.find_all("article", {"data-service-review-card-paper": True})
+            or soup.find_all("article", class_=re.compile(r"paper|reviewCard|card", re.I))
+        )
+
+    if not candidate_articles:
+        logger.warning("Trustpilot: no review articles found in HTML")
+        return reviews
+
+    for article in candidate_articles:
+        try:
+            # Rating: data attribute > image alt text > star count
+            rating = "N/A"
+            rating_div = article.find(attrs={"data-service-review-rating": True})
+            if rating_div:
+                rating = rating_div["data-service-review-rating"]
+            else:
+                star_img = article.find("img", {"alt": re.compile(r"Rated \d|\d star", re.I)})
+                if star_img:
+                    m = re.search(r"(\d+\.?\d*)", star_img.get("alt", ""))
+                    if m:
+                        rating = m.group(1)
+
+            # Title: h2 → h3 → first strong
+            title_el = article.find("h2") or article.find("h3") or article.find("strong")
+
+            # Body: biggest <p> in the article
+            paras = article.find_all("p")
+            body_el = max(paras, key=lambda p: len(p.get_text()), default=None) if paras else None
+
+            # Author: span with consumer/profile class, or first named span
+            author_el = (
+                article.find(attrs={"data-consumer-name-typography": True})
+                or article.find("span", class_=re.compile(r"consumer|name|author", re.I))
+                or article.find("a", class_=re.compile(r"consumer|profile", re.I))
+            )
+
+            # Date: <time> tag
+            time_el = article.find("time")
+            date = "N/A"
+            if time_el:
+                date = time_el.get("datetime", time_el.get_text())[:10]
+
+            body = body_el.get_text(" ", strip=True) if body_el else ""
+            if not body or len(body) < 10:
+                continue
+
+            reviews.append({
+                "author":      author_el.get_text(strip=True) if author_el else "Trustpilot User",
+                "rating":      str(rating),
+                "date":        date,
+                "title":       title_el.get_text(strip=True) if title_el else "",
+                "review_text": body,
+            })
+        except Exception as e:
+            logger.debug(f"Trustpilot: skipping review — {e}")
+
+    return reviews
+
+
+def parse_ebay_reviews(html):
+    # Try JSON-LD first
+    ld_reviews = _parse_json_ld_reviews(html)
+    if ld_reviews:
+        logger.info(f"eBay: got {len(ld_reviews)} reviews via JSON-LD")
+        return ld_reviews
+
+    soup = BeautifulSoup(html, "html.parser")
+    reviews = []
+
+    # eBay product review containers
+    containers = (
+        soup.find_all("div", class_=re.compile(r"ebayui-review-section|review-item|rvw", re.I))
+        or soup.find_all("div", attrs={"itemprop": "review"})
+    )
+
+    # Fallback: look for the reviews section and grab children
+    if not containers:
+        review_section = soup.find("section", id=re.compile(r"review|feedback", re.I))
+        if review_section:
+            containers = review_section.find_all(["div", "article"])
+
+    if not containers:
+        logger.warning("eBay: no review containers found")
+        return reviews
+
+    for container in containers:
+        try:
+            # Rating — try aria-label or text
+            rating = "N/A"
+            rating_el = container.find(
+                ["span", "div"],
+                class_=re.compile(r"rating|star", re.I)
+            )
+            if rating_el:
+                m = re.search(r"(\d\.?\d*)", rating_el.get("aria-label", rating_el.text))
+                if m:
+                    rating = m.group(1)
+
+            # Also try itemprop
+            rating_meta = container.find("meta", {"itemprop": "ratingValue"})
+            if rating_meta:
+                rating = rating_meta.get("content", rating)
+
+            title_el = container.find(["h3", "h4"], class_=re.compile(r"title|heading", re.I))
+            body_el  = container.find("p") or container.find(
+                "span", class_=re.compile(r"review-content|body", re.I)
+            )
+
+            body = body_el.text.strip() if body_el else ""
+            if not body:
+                continue
+
+            reviews.append({
+                "author":      "eBay Buyer",
+                "rating":      rating,
+                "date":        "N/A",
+                "title":       title_el.text.strip() if title_el else "",
+                "review_text": body,
+            })
+        except Exception as e:
+            logger.debug(f"eBay: skipping review — {e}")
+
+    return reviews
+
+
+def parse_bestbuy_reviews(html):
+    # Try JSON-LD first
+    ld_reviews = _parse_json_ld_reviews(html)
+    if ld_reviews:
+        logger.info(f"Best Buy: got {len(ld_reviews)} reviews via JSON-LD")
+        return ld_reviews
+
+    soup = BeautifulSoup(html, "html.parser")
+    reviews = []
+
+    containers = (
+        soup.find_all("li", class_=re.compile(r"review-item|ugc-review"))
+        or soup.find_all("div", class_=re.compile(r"ugc-review|review-item"))
+    )
+
+    if not containers:
+        logger.warning("Best Buy: no review containers found")
+        return reviews
+
+    for container in containers:
+        try:
+            # Rating — look for "X out of 5" text
+            rating = "N/A"
+            rating_el = container.find(
+                ["p", "span"],
+                class_=re.compile(r"rating-overview|sr-only|c-rating", re.I)
+            )
+            if rating_el:
+                m = re.search(r"(\d\.?\d*)\s*out of\s*\d", rating_el.text, re.I)
+                if m:
+                    rating = m.group(1)
+
+            title_el  = container.find(["h3", "h4", "p"], class_=re.compile(r"review-title|title", re.I))
+            body_el   = container.find("p", class_=re.compile(r"pre-white-space|review-content", re.I))
+            author_el = container.find(["span", "p"], class_=re.compile(r"author|reviewer", re.I))
+            date_el   = container.find("time") or container.find(
+                ["span", "p"], class_=re.compile(r"date|time", re.I)
+            )
+
+            body = body_el.text.strip() if body_el else ""
+            if not body:
+                continue
+
+            reviews.append({
+                "author":      author_el.text.strip() if author_el else "Best Buy Customer",
+                "rating":      rating,
+                "date":        date_el.text.strip() if date_el else "N/A",
+                "title":       title_el.text.strip() if title_el else "",
+                "review_text": body,
+            })
+        except Exception as e:
+            logger.debug(f"Best Buy: skipping review — {e}")
+
+    return reviews
+
+
+def parse_g2_reviews(html):
+    # G2 embeds JSON-LD with itemprop — try it first
+    ld_reviews = _parse_json_ld_reviews(html)
+    if ld_reviews:
+        logger.info(f"G2: got {len(ld_reviews)} reviews via JSON-LD")
+        return ld_reviews
+
+    soup = BeautifulSoup(html, "html.parser")
+    reviews = []
+
+    containers = (
+        soup.find_all("div", attrs={"itemprop": "review"})
+        or soup.find_all("div", class_=re.compile(r"paper paper--white paper--shadow"))
+        or soup.find_all("div", class_=re.compile(r"review-card", re.I))
+    )
+
+    if not containers:
+        logger.warning("G2: no review containers found")
+        return reviews
+
+    for container in containers:
+        try:
+            # Rating — prefer itemprop meta tag
+            rating = "N/A"
+            rating_meta = container.find("meta", {"itemprop": "ratingValue"})
+            if rating_meta:
+                rating = rating_meta.get("content", "N/A")
+            else:
+                star_el = container.find(class_=re.compile(r"stars|rating", re.I))
+                if star_el:
+                    m = re.search(r"(\d\.?\d*)", star_el.get("title", star_el.text))
+                    if m:
+                        rating = m.group(1)
+
+            title_el  = container.find(["h3", "p"], {"itemprop": "name"}) \
+                        or container.find(class_=re.compile(r"review-title", re.I))
+            body_el   = container.find(["span", "p"], {"itemprop": "reviewBody"}) \
+                        or container.find(["div", "p"], class_=re.compile(r"review-desc|body", re.I))
+            author_el = container.find(["span", "div", "a"], {"itemprop": "name"})
+            date_el   = container.find("time") or container.find(
+                ["span", "p"], class_=re.compile(r"date|time", re.I)
+            )
+
+            body = body_el.text.strip() if body_el else ""
+            if not body:
+                continue
+
+            reviews.append({
+                "author":      author_el.text.strip() if author_el else "G2 User",
+                "rating":      str(rating),
+                "date":        date_el.text.strip() if date_el else "N/A",
+                "title":       title_el.text.strip() if title_el else "",
+                "review_text": body,
+            })
+        except Exception as e:
+            logger.debug(f"G2: skipping review — {e}")
+
+    return reviews
+
+
+# ─────────────────────────────────────────────
+#  PAGINATION
+# ─────────────────────────────────────────────
+
+def _get_next_page_url(html, current_url, platform):
+    """Return the next-page URL or None if there is no next page."""
+    soup = BeautifulSoup(html, "html.parser")
+    parsed = urlparse(current_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    def resolve(href):
+        if not href:
+            return None
+        if href.startswith("http"):
             return href
+        if href.startswith("/"):
+            return base + href
+        return None
+
+    if platform == "Amazon":
+        btn = soup.find("li", class_="a-last")
+        if btn and btn.find("a"):
+            return resolve(btn.find("a").get("href"))
+
+    elif platform == "Trustpilot":
+        btn = (
+            soup.find("a", {"name": "pagination-button-next"})
+            or soup.find("a", {"data-pagination-button-next-link": True})
+            or soup.find("a", {"rel": "next"})
+            or soup.find("a", class_=re.compile(r"pagination-button-next|next", re.I))
+        )
+        if btn:
+            return resolve(btn.get("href"))
+
+    elif platform == "Flipkart":
+        btn = soup.find("a", class_=re.compile(r"_1LKTO3|_3s3Jj|next", re.I))
+        if btn:
+            return resolve(btn.get("href"))
+
+    elif platform in ("Best Buy", "G2", "eBay"):
+        btn = (
+            soup.find("a", {"rel": "next"})
+            or soup.find("a", class_=re.compile(r"next|pagination-next", re.I))
+        )
+        if btn:
+            return resolve(btn.get("href"))
 
     return None
 
 
-def scrape_reviews(url, max_pages=3):
-    all_reviews = []
-    page_num = 1
+# ─────────────────────────────────────────────
+#  PARSER REGISTRY & MAIN ENTRY
+# ─────────────────────────────────────────────
 
-    # amazon product pages (/dp/) need to be sent to the reviews page
-    if "amazon.com" in url and "/dp/" in url:
-        asin = url.split("/dp/")[1].split("/")[0].split("?")[0]
-        current_url = f"https://www.amazon.com/product-reviews/{asin}?reviewerType=all_reviews&sortBy=recent&pageNumber=1"
-        logger.info(f"Detected Amazon product URL, using reviews page (ASIN: {asin})")
-    else:
-        current_url = url
+PARSERS = {
+    "Amazon":    parse_amazon_reviews,
+    "Flipkart":  parse_flipkart_reviews,
+    "Trustpilot":parse_trustpilot_reviews,
+    "eBay":      parse_ebay_reviews,
+    "Best Buy":  parse_bestbuy_reviews,
+    "G2":        parse_g2_reviews,
+}
+
+
+def scrape_reviews(url, max_pages=3, status_cb=None):
+    """
+    Scrape reviews from the given URL.
+    - Auto-detects the platform and routes to the right parser.
+    - Uses a session with cookie prefetching to look more like a real browser.
+    - status_cb: optional callable(str) for live progress updates (e.g. st.write).
+    Returns (reviews: list, debug: dict).
+    """
+    def _log(msg):
+        logger.info(msg)
+        if status_cb:
+            status_cb(msg)
+
+    debug = {"platform": None, "pages_tried": 0, "html_sizes": [], "blocked": False}
+    platform = detect_platform(url)
+    debug["platform"] = platform
+
+    if platform == "Unknown" or platform not in PARSERS:
+        _log(f"❌ Unsupported platform for URL: {url}")
+        return [], debug
+
+    current_url = _build_reviews_url(url, platform)
+    parse_fn    = PARSERS[platform]
+    all_reviews = []
+    page_num    = 1
+
+    _log(f"🌐 Platform: **{platform}**")
+    _log(f"🔗 Reviews URL: `{current_url}`")
+
+    # Build one session per scrape job (shares cookies across pages)
+    session = _make_session(platform)
+    _log(f"🍚 Session ready (cookies: {len(session.cookies)})")
 
     while current_url and page_num <= max_pages:
-        logger.info(f"Scraping page {page_num}...")
-
+        _log(f"\n📄 Fetching page {page_num}…")
+        debug["pages_tried"] += 1
         try:
-            html = get_page(current_url)
+            html = get_page(current_url, platform=platform, session=session)
+
             if not html:
-                logger.error("Empty response, stopping")
+                debug["blocked"] = True
+                _log(f"⚠️ Page {page_num}: empty / bot-blocked response")
                 break
 
-            reviews = parse_amazon_reviews(html)
+            debug["html_sizes"].append(len(html))
+            _log(f"📦 Page {page_num}: received {len(html):,} bytes")
+
+            # Quick sanity check — if page is too small it's probably an error page
+            if len(html) < 2000:
+                _log(f"⚠️ Page suspiciously small ({len(html)} bytes) — likely error page")
+                _log(f"   Preview: {html[:300]}")
+                break
+
+            reviews = parse_fn(html)
             all_reviews.extend(reviews)
-            logger.info(f"Page {page_num}: got {len(reviews)} reviews (total: {len(all_reviews)})")
+            _log(f"✅ Page {page_num}: found {len(reviews)} reviews (total so far: {len(all_reviews)})")
 
             if not reviews:
-                logger.info("No reviews on this page, stopping pagination")
+                _log(f"   ℹ️ No reviews found on this page — stopping pagination")
+                # Show first 500 chars of HTML for debugging
+                _log(f"   HTML preview: `{html[:500].strip()}`")
                 break
 
-            next_url = get_next_page_url(html, current_url)
-            current_url = next_url
+            current_url = _get_next_page_url(html, current_url, platform)
             page_num += 1
 
         except Exception as e:
-            logger.error(f"Error scraping page {page_num}: {e}")
+            _log(f"❌ Error on page {page_num}: {e}")
+            debug["blocked"] = True
             break
 
-    logger.info(f"Scraping done. Total: {len(all_reviews)} reviews")
-    return all_reviews
-
-
-def get_demo_reviews():
-    """Returns sample reviews for demo/testing when Amazon blocks scraping."""
-    logger.info("Using demo reviews (Amazon scraping blocked)")
-    return DEMO_REVIEWS
+    _log(f"\n🏁 Scraping done. Total: **{len(all_reviews)} reviews** from {platform}")
+    return all_reviews, debug

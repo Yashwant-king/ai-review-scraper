@@ -5,7 +5,7 @@ import logging
 import pandas as pd
 from dotenv import load_dotenv
 
-from scraper import scrape_reviews, get_demo_reviews
+from scraper import scrape_reviews, detect_platform, SUPPORTED_PLATFORMS
 from preprocess import preprocess_all
 from llm import analyze_chunked_review
 
@@ -17,13 +17,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Amazon Echo Dot 5th Gen — product used for testing
-# has tons of reviews and a good mix of sentiments
+# Default URL for quick testing
 DEFAULT_URL = "https://www.amazon.com/dp/B09B8YWXDF"
 
 
 def main():
-    demo_mode = "--demo" in sys.argv
     url_args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
     print("\n" + "=" * 60)
@@ -32,29 +30,34 @@ def main():
 
     if url_args:
         url = url_args[0]
-    elif demo_mode:
-        url = DEFAULT_URL
     else:
-        # ask the user to enter a URL — satisfies assignment requirement
-        print(f"\nDefault product URL: {DEFAULT_URL}")
-        user_input = input("Enter Amazon product URL (or press Enter to use default): ").strip()
+        print(f"\nDefault URL: {DEFAULT_URL}")
+        print(f"Supported platforms: {', '.join(SUPPORTED_PLATFORMS)}")
+        user_input = input("Enter a product URL (or press Enter to use default): ").strip()
         url = user_input if user_input else DEFAULT_URL
 
+    platform = detect_platform(url)
     print(f"\nProduct URL : {url}")
+    print(f"Platform    : {platform}")
     print("=" * 60)
 
-    # --- Step 1: Scrape (or use demo data) ---
-    if demo_mode:
-        print("\n[DEMO MODE] Using sample reviews instead of live scraping")
-        reviews = get_demo_reviews()
-    else:
-        print("\n[1/4] Scraping reviews from Amazon...")
-        reviews = scrape_reviews(url, max_pages=3)
+    if platform == "Unknown":
+        print(f"\n❌ Unsupported platform.")
+        print(f"   Supported: {', '.join(SUPPORTED_PLATFORMS)}")
+        sys.exit(1)
 
-        if not reviews:
-            print("\nCouldn't scrape live reviews (Amazon bot protection is active)")
-            print("Falling back to demo reviews to show the full pipeline...\n")
-            reviews = get_demo_reviews()
+    # --- Step 1: Scrape ---
+    print(f"\n[1/4] Scraping {platform} reviews...")
+    reviews, debug = scrape_reviews(url, max_pages=3)
+
+    if not reviews:
+        print(f"\n❌ Could not retrieve reviews from {platform}.")
+        if debug.get("html_sizes"):
+            print(f"   HTML received: {debug['html_sizes']} bytes — but 0 reviews parsed.")
+        print("   Why: Bot protection triggered, CAPTCHA returned, or page requires JavaScript.")
+        print("   Fix: Wait a few minutes, try a VPN, or use a different network.")
+        sys.exit(1)
+
 
     print(f"Got {len(reviews)} reviews to analyze\n")
 
