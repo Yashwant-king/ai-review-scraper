@@ -134,7 +134,7 @@ with st.sidebar:
     # scraper settings
     st.markdown("### ⚙️ Scraper Settings")
     max_pages = st.slider("Max review pages", 1, 5, 2)
-    use_demo = st.toggle("Use demo data (skip live scraping)", value=True,
+    use_demo = st.toggle("Use demo data (skip live scraping)", value=False,
                          help="Toggle off to try live scraping from Amazon")
 
     st.divider()
