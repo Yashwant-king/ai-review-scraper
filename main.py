@@ -26,17 +26,21 @@ def main():
     demo_mode = "--demo" in sys.argv
     url_args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
+    print("\n" + "=" * 60)
+    print("        AI Review Scraper — Powered by Groq LLaMA 3.1")
+    print("=" * 60)
+
     if url_args:
         url = url_args[0]
-    else:
+    elif demo_mode:
         url = DEFAULT_URL
-        if not demo_mode:
-            print(f"No URL provided, using default: {url}")
-            print("Tip: run with --demo flag to skip scraping and test with sample data\n")
+    else:
+        # ask the user to enter a URL — satisfies assignment requirement
+        print(f"\nDefault product URL: {DEFAULT_URL}")
+        user_input = input("Enter Amazon product URL (or press Enter to use default): ").strip()
+        url = user_input if user_input else DEFAULT_URL
 
-    print(f"\nAI Review Scraper")
-    print("=" * 60)
-    print(f"Product: {url}")
+    print(f"\nProduct URL : {url}")
     print("=" * 60)
 
     # --- Step 1: Scrape (or use demo data) ---
@@ -60,7 +64,7 @@ def main():
     print(f"{len(processed)} reviews ready\n")
 
     # --- Step 3: LLM Analysis ---
-    print("[3/4] Running Groq LLM analysis (llama3-8b-8192)...\n")
+    print("[3/4] Running Groq LLM analysis (llama-3.1-8b-instant)...\n")
     results = []
 
     for i, review in enumerate(processed, 1):
